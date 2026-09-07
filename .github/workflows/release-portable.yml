@@ -1,0 +1,89 @@
+name: Release Portable Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '发布版本号（例如 2.2.0，将作为 v2.2.0 标签创建 Draft Release）'
+        required: true
+        type: string
+      platform:
+        description: '目标平台'
+        required: false
+        default: 'x64'
+        type: choice
+        options:
+          - x64
+          - arm64
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-2025
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: 创建本地发布标签
+        run: git tag "v${{ inputs.version }}"
+        shell: pwsh
+
+      - name: 更新版本信息
+        run: ./.azp/scripts/update-version.ps1 -RepoName "${{ github.repository }}"
+        shell: pwsh
+
+      - name: 安装所需 Visual Studio 组件
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -property installationPath
+          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe" modify --installPath $vsPath --configFile (Resolve-Path '.vsconfig') --quiet --norestart
+          if ($LASTEXITCODE -ne 0) { Write-Warning 'Visual Studio 组件安装失败，继续尝试构建。' }
+
+      - name: 集成 vcpkg
+        run: C:\vcpkg\vcpkg.exe integrate install
+        shell: pwsh
+
+      - name: 缓存 vcpkg 依赖
+        uses: actions/cache@v4
+        with:
+          path: C:\vcpkg\installed
+          key: vcpkg-${{ inputs.platform }}-${{ hashFiles('**/vcpkg.json') }}
+
+      - name: 安装 NuGet
+        uses: nuget/setup-nuget@v2
+        with:
+          nuget-version: '7.x'
+
+      - name: 缓存 NuGet 包
+        uses: actions/cache@v4
+        with:
+          path: packages
+          key: nuget-${{ hashFiles('**/packages.config') }}
+
+      - name: 还原 NuGet 包
+        run: nuget restore TranslucentTB.slnx
+        shell: pwsh
+
+      - name: 设置 MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: 构建解决方案
+        run: msbuild TranslucentTB.slnx /m /p:Configuration=Release /p:Platform=${{ inputs.platform }} /p:BuildType=Release /p:SkipSigning=true
+        shell: pwsh
+
+      - name: 创建便携版
+        run: ./.azp/scripts/create-portable.ps1 -Platform "${{ inputs.platform }}" -Configuration Release -WorkDir "$env:RUNNER_TEMP" -OutputDir "$env:GITHUB_WORKSPACE\portable-out" -NoConfig -Compress
+        shell: pwsh
+
+      - name: 创建 Draft Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release create "v${{ inputs.version }}" --draft --title "TranslucentTB ${{ inputs.version }}" --generate-notes "$env:GITHUB_WORKSPACE\portable-out\TranslucentTB-portable-${{ inputs.platform }}.zip"
