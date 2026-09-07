@@ -14,8 +14,11 @@ DynamicDependency::DynamicDependency(HMODULE hModule, Util::null_terminated_wstr
 	{
 		if (!IsApiSetImplemented("api-ms-win-appmodel-runtime-l1-1-5"))
 		{
-			Localization::ShowLocalizedMessageBox(IDS_PORTABLE_UNSUPPORTED, MB_OK | MB_ICONWARNING | MB_SETFOREGROUND, hModule).join();
-			ExitProcess(1);
+			// 当前系统（Windows 10 及更早）没有动态依赖 API（api-ms-win-appmodel-runtime-l1-1-5）。
+			// 便携版已内置依赖的框架包 DLL（WinUI 与 VC 运行库），无需在运行时解析框架包，
+			// 直接走本地加载路径即可。
+			MessagePrint(spdlog::level::info, L"Dynamic dependency API unavailable; using bundled dependencies.");
+			return;
 		}
 
 		static constexpr PackageDependencyProcessorArchitectures arch =
